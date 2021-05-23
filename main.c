@@ -10,7 +10,8 @@
 #define SERVER_IP   "127.0.0.1"
 #define SERVER_PORT 1111
 #define BACKLOG     8
-#define BUFSIZE     1024
+#define MAXBUF     1024
+#define MAXEVENTS   64
 
 void Exit(char *);
 
@@ -43,28 +44,44 @@ int main()
     
     // Add serverfd to epoll instance
     struct epoll_event eevent = {0};
-    eevent.events = EPOLLIN
+    eevent.events = EPOLLIN;
+    eevent.data.fd = serverfd;
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, serverfd, &eevent) < 0)
-        Exit("Failed to add server file descriptor to epoll");
+        Exit("Failed to add server file descriptor to epoll instance");
 
-    // // Accept a single client connection
-    // int clientfd;
-    // struct sockaddr_in client;
-    // socklen_t client_size = (size_t)sizeof(client);
-    // memset(&client, 0, sizeof(client));
-    // if ((clientfd = accept(serverfd, (struct sockaddr*)&clientfd, &client_size)) < 0)
-    //     Exit("Client connection failed");
-
-    // // Receive and print output from client
-    // int bytes = 0;
-    // char buf[BUFSIZE];
-    // while(1) {
-    //     memset(&buf, 0, sizeof(buf));
-    //     bytes = recv(clientfd, &buf, BUFSIZE, 0);
-    //     printf("Received Message: %s", &buf);
-    //     if (strcmp(buf, "quit\n") == 0)
-    //         break;
-    // }
+    struct epoll_event events[MAXEVENTS];
+    int clientfd, nfds, i, bytes_read;
+    struct sockaddr_in client;
+    socklen_t client_size = sizeof(client);
+    char buf[MAXBUF];
+    while (i < 2) {
+        memset(&events, 0, MAXEVENTS);
+        nfds = epoll_wait(epfd, events, MAXEVENTS, 36000);
+        for (i = 0; i < nfds; i++) {
+            if (events[i].data.fd == serverfd) {
+                // If fd is server then accept the incoming connection and add to epoll instance
+                clientfd = accept(serverfd, (struct sockaddr*)&client, &client_size);
+                memset(&eevent, 0, sizeof(eevent));
+                eevent.events = EPOLLIN;
+                eevent.data.fd = clientfd;
+                epoll_ctl(epfd, EPOLL_CTL_ADD, clientfd, &eevent);
+            } else {
+                // Otherwise this is a client fd and needs to handled
+                if (events[i].events & EPOLLHUP) {
+                    // The client has closed its connection and should be removed from the epoll instance
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
+                } else {
+                    memset(&buf, 0, sizeof(buf));
+                    bytes_read = recv(events[i].data.fd, &buf, MAXBUF, 0);
+                    printf("Received: %s\n", buf);
+                    if (strcmp(buf, "quit\n") == 0) {
+                        goto STOP;
+                    }
+                }
+            }
+        }
+    }
+    STOP:
 
     printf("Shutting down...\n");
     close(serverfd);
